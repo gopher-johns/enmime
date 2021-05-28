@@ -506,7 +506,7 @@ func fixUnquotedSpecials(s string) string {
 
 	clean := strings.Builder{}
 	clean.WriteString(s[:idx+1])
-	s = s[idx+1:]
+	s = fixUnquotedValueWithSpaces(s[idx+1:], ';')
 
 	for len(s) > 0 {
 		var consumed string
@@ -614,4 +614,87 @@ func fixUnescapedQuotes(hvalue string) string {
 // Detects a RFC-822 linear-white-space, passed to strings.FieldsFunc.
 func whiteSpaceRune(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\r' || r == '\n'
+}
+
+// gets a string like: x-unix-mode=0644; name=File name with spaces.pdf; some-param=da da da
+// returns a string like: x-unix-mode=0644; name="File name with spaces.pdf"
+// A Bit of explanation on terminology
+// attr is the key
+// value is the value
+// param refers to the combination of "attr=value" separated by a separator
+func fixUnquotedValueWithSpaces(s string, sep byte) string {
+	// The clean string that we will return
+	clean := strings.Builder{}
+	// This is either attr or value depending on where we are at in a
+	// Content-Type param list
+	const (
+		attrMode = iota
+		valueMode
+	)
+	mode := attrMode
+	attr := strings.Builder{}
+	value := strings.Builder{}
+	insideQuotes := false
+	spaceEncountered := false
+
+	resetForNextParam := func() {
+		attr.Reset()
+		value.Reset()
+		insideQuotes = false
+		spaceEncountered = false
+		mode = attrMode
+	}
+
+	writeCleanParam := func() {
+		clean.WriteString(attr.String())
+		if spaceEncountered {
+			clean.WriteByte('"')
+		}
+		clean.WriteString(value.String())
+		if spaceEncountered {
+			clean.WriteByte('"')
+		}
+	}
+
+	for len(s) > 0 {
+		// fmt.Printf("\ns -> %s\nmode -> %s\n attr-> %s\n value-> %s\n insideQuotes->%t\n spaceEncountered-> %t\n\n==========\n\n", s, mode, attr.String(), value.String(), insideQuotes, spaceEncountered)
+		switch mode {
+		case attrMode:
+			if s[0] == '=' {
+				mode = valueMode
+			}
+			attr.WriteByte(s[0])
+			s = s[1:]
+		case valueMode:
+			// If we encounter an end, reset the state
+			if len(s) == 1 || s[0] == '\n' || s[0] == '\t' || ((s[0] == '"' || s[0] == ';') && !insideQuotes) {
+				if len(s) == 1 && s[0] != ';' {
+					value.WriteString(s)
+				}
+				writeCleanParam()
+				if len(s) > 1 || s[0] == ';' {
+					clean.WriteByte(s[0])
+				}
+				s = s[1:]
+				resetForNextParam()
+				break
+			}
+
+			if s[0] == '"' {
+				insideQuotes = true
+			}
+
+			if s[0] == ' ' && !insideQuotes {
+				spaceEncountered = true
+			}
+
+			value.WriteByte(s[0])
+			s = s[1:]
+		}
+
+	}
+	if attr.Len() > 0 {
+		clean.WriteString(attr.String())
+	}
+	return clean.String()
 }
